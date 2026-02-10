@@ -13,6 +13,9 @@ parser.add_argument('--beacon_size', type=int, required=True, help="Size of the 
 parser.add_argument('--snp_count', type=int, required=True, help="Number of SNPs")
 parser.add_argument('--corr_epoch', type=int, required=True, help="Number of epochs for correlation optimization")
 parser.add_argument('--freq_epoch', type=int, required=True, help="Number of epochs for frequency optimization")
+parser.add_argument('--path', type=str, required=True, help="Path to beacon file")
+parser.add_argument('--corr_path', type=str, required=True, help="Path to correlation matrix file")
+
 
 args = parser.parse_args()
 
@@ -21,6 +24,8 @@ beacon_size = [args.beacon_size]
 snp_count = args.snp_count
 corr_epoch = args.corr_epoch
 freq_epoch = args.freq_epoch
+path = args.path
+corr_path = args.corr_path
 
 # timer
 # start_time = time.time()
@@ -34,7 +39,7 @@ f1_scores = []
 accuracies = []
 
 # data files
-beacon = np.load(r"C:\RESEARCH PROJECT\D1\beacon.npy")
+beacon = np.load(path)
 print("Loaded beacon data...")
 print(f"Beacon data loaded. Shape: {beacon.shape}")
 
@@ -44,7 +49,7 @@ for ind_count in beacon_size:
 
     # Load 
     print("Loading correlation matrix...")
-    corr1 = np.load(r"C:\RESEARCH PROJECT\D1\OpenSNP.npy")
+    corr1 = np.load(corr_path)
     corr1 = corr1[:snp_count, :100]
 
     # Calculate 
@@ -71,7 +76,7 @@ for ind_count in beacon_size:
     reconstructed_beacon = beacon_tool.compare_and_sort_columns(beacon, reconstructed_beacon)
 
     # Training 
-    max_iterations = 3000
+    max_iterations = 10
     iteration = 0
     converged = False
     target_frequencies = torch.tensor(np.sum(beacon, axis=1), dtype=torch.float32)
