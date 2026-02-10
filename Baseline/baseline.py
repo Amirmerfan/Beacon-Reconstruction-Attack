@@ -10,13 +10,13 @@ from Greedy import GreedyTool
 
 # input values 
 parser = argparse.ArgumentParser(description="Run Baseline Approach")
-parser.add_argument("--Beacon_Size", type=int, required=True, help="Number of individuals")
+parser.add_argument("--beacon_size", type=int, required=True, help="Number of individuals")
 parser.add_argument("--snp_count", type=int, required=True, help="Number of SNPs")
 parser.add_argument("--path", type=str, required=True, help="Path to beacon file")
 args = parser.parse_args()
 
 # Parameters 
-Beacon_Size = [args.Beacon_Size]
+Beacon_Size = [args.beacon_size]
 snp_count = args.snp_count
 path = args.path
 
