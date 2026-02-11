@@ -23,9 +23,8 @@ class FastReconstructionTool:
         self.B_logits = nn.Parameter(init_logits.requires_grad_(True))
         
         # --- FIX: EQUAL LEARNING RATES (Paper Standard) ---
-        # Both set to 0.001. Previous 0.01 was too aggressive.
-        self.opt_corr = torch.optim.Adam([self.B_logits], lr=0.001) 
-        self.opt_freq = torch.optim.Adam([self.B_logits], lr=0.01) 
+        self.opt_corr = torch.optim.Adam([self.B_logits], lr=0.1) 
+        self.opt_freq = torch.optim.Adam([self.B_logits], lr=0.5) 
 
         # --- SCHEDULERS ---
         self.sched_corr = torch.optim.lr_scheduler.ExponentialLR(self.opt_corr, gamma=0.96)
@@ -41,6 +40,26 @@ class FastReconstructionTool:
 
         sm_matrix = (p11 + p00) / self.num_indiv
         return sm_matrix
+
+    def calculate_target_correlations(self, beacon):
+        '''
+        Calculates the correlations between each pair of SNPs based on the Sokal-Michener similarity.
+        (Matches of 1s + Matches of 0s) / N
+        '''
+        N_p = beacon.shape[1]
+
+        # 1. Calculate Matches of 1s ( (1,1) )
+        matches_1 = beacon @ beacon.T
+        
+        # 2. Calculate Matches of 0s ( (0,0) )
+        # We invert the beacon (0->1, 1->0) and do the same dot product
+        beacon_neg = 1 - beacon
+        matches_0 = beacon_neg @ beacon_neg.T
+
+        # 3. Sum them up and normalize
+        correlations = (matches_1 + matches_0) / N_p
+
+        return correlations
 
     def optimize(self, target_frequencies, cycles=1, corr_steps=1000, freq_steps=500):
         if not isinstance(target_frequencies, torch.Tensor):
