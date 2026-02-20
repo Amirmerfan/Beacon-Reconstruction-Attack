@@ -1,151 +1,120 @@
 import argparse
-from scipy.spatial.distance import hamming
 import numpy as np
-import matplotlib.pyplot as plt
 import torch
-import torch.nn.functional as F
-import math
-from Module import ReconstructionTool
+from collections import deque
+import time
+from Module import ReconstructionTool  
 
-# input values 
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 parser = argparse.ArgumentParser()
-parser.add_argument('--beacon_size', type=int, required=True, help="Size of the beacon matrix")
-parser.add_argument('--snp_count', type=int, required=True, help="Number of SNPs")
-parser.add_argument('--corr_epoch', type=int, required=True, help="Number of epochs for correlation optimization")
-parser.add_argument('--freq_epoch', type=int, required=True, help="Number of epochs for frequency optimization")
-parser.add_argument('--path', type=str, required=True, help="Path to beacon file")
-parser.add_argument('--corr_path', type=str, required=True, help="Path to correlation matrix file")
-
-
+parser.add_argument('--beacon_size', type=int, default=50)
+parser.add_argument('--snp_count', type=int, default=1000)
+parser.add_argument('--corr_epoch', type=int, default=1000) 
+parser.add_argument('--freq_epoch', type=int, default=500)
+parser.add_argument('--path', type=str, required=True, help="Path to Target_Beacon.npy")
+parser.add_argument('--corr_path', type=str, required=True, help="Path to OpenSNP.npy")
+parser.add_argument('--num_runs', type=int, default=1, help="Number of independent runs")
 args = parser.parse_args()
 
-# Parameters 
-beacon_size = [args.beacon_size]
-snp_count = args.snp_count
-corr_epoch = args.corr_epoch
-freq_epoch = args.freq_epoch
-path = args.path
-corr_path = args.corr_path
+print("Loading data...")
+beacon_full = (np.load(args.path) > 0).astype(np.float32)
+corr_full = (np.load(args.corr_path) > 0).astype(np.float32)
 
-# timer
-# start_time = time.time()
-np.random.seed(42)
-torch.manual_seed(42)
+beacon = beacon_full[:args.snp_count, :args.beacon_size]
+corr_data = corr_full[:args.snp_count, :100]
 
-# Arrays 
-precisions = []
-recalls = []
-f1_scores = []
-accuracies = []
+print(f"Beacon Shape: {beacon.shape}")
 
-# data files
-beacon = np.load(path)
-print("Loaded beacon data...")
-print(f"Beacon data loaded. Shape: {beacon.shape}")
+corr_tool = ReconstructionTool(corr_data.shape, np.zeros((1,1))) 
+target_corr_matrix = corr_tool.calculate_current_correlations(
+    torch.tensor(corr_data, dtype=torch.float32)
+).cpu().numpy()
 
-for ind_count in beacon_size:
-    print("Individual count:", ind_count)
-    print("-" * 80)
+target_frequencies = np.sum(beacon, axis=1)
 
-    # Load 
-    print("Loading correlation matrix...")
-    corr1 = np.load(corr_path)
-    corr1 = corr1[:snp_count, :100]
+all_accuracies = []
+all_f1_scores = []
+all_time = []
 
-    # Calculate 
-    corr_tool = ReconstructionTool(corr1)
-    corr = corr_tool.calculate_correlations(corr1)
-    print(corr.shape, "Initial Corr")
+print("-" * 50)
+print(f"Starting {args.num_runs} independent optimized reconstructions...")
+print(f"Configuration: {args.corr_epoch} Corr Steps / {args.freq_epoch} Freq Steps")
+print("-" * 50)
 
-    # tensor 
-    corr = torch.tensor(corr, dtype=torch.float32, requires_grad=True)
+for run in range(args.num_runs):
+    start_time = time.time()
+    
+    baseline_guess = ReconstructionTool.greedy_initialization(target_frequencies, args.beacon_size)
 
-    # Slice 
-    beacon = beacon[:snp_count, :ind_count]
-    print(f"Beacon partitioning for {ind_count} individuals. Shape: {beacon.shape}")
-    beacon_tool = ReconstructionTool(beacon)
-    print(beacon.shape)
-    number_of_ones = np.sum(beacon)
-    print("Number of ones in beacon:", number_of_ones)
-    print(beacon, "Initial Beacon")
+    optimizer_tool = ReconstructionTool(
+        beacon.shape, 
+        target_corr_matrix, 
+        initial_guess=baseline_guess 
+    )
 
-    # Query
-    reconstructed_beacon = beacon_tool.query(proportion=1.0)
-    print(reconstructed_beacon, "Initial Reconstructed Beacon")
-    print("Number of ones in reconstructed beacon:", number_of_ones)
-    reconstructed_beacon = beacon_tool.compare_and_sort_columns(beacon, reconstructed_beacon)
+    max_iterations = 1001
+    min_iterations = 21
 
-    # Training 
-    max_iterations = 10
-    iteration = 0
-    converged = False
-    target_frequencies = torch.tensor(np.sum(beacon, axis=1), dtype=torch.float32)
-    prev_reconstructed_beacon = None 
+    window_size = 10
+    corr_history = deque(maxlen=window_size)
+    freq_history = deque(maxlen=window_size)
 
-    while iteration < max_iterations:
-        iteration += 1
+    tolerance_corr = 0.001
+    tolerance_freq = 0.0001
 
-        # Stage 1: 
-        reconstructed_beacon_tensor = torch.tensor(reconstructed_beacon, dtype=torch.float32, requires_grad=True)
-        optimizer = torch.optim.Adam([reconstructed_beacon_tensor], lr=0.001)
+    current_corr_steps = args.corr_epoch
+    current_freq_steps = args.freq_epoch
 
-        for epoch in range(corr_epoch):
-            optimizer.zero_grad()
-            loss = torch.norm(corr_tool.calculate_correlations(reconstructed_beacon_tensor) - corr, p='fro')
-            loss.backward()
-            optimizer.step()
-            if epoch % 100 == 0:
-                print(f'Iteration {iteration}, Epoch {epoch}, loss {loss.item()}')
+    corr_active = True
+    freq_active = True
 
-        print(reconstructed_beacon, "Reconstructed Beacon")
+    for i in range(max_iterations):
+        l_corr, l_freq = optimizer_tool.optimize(
+            target_frequencies, 
+            cycles=1,
+            corr_steps=current_corr_steps, 
+            freq_steps=current_freq_steps
+        )
 
-        # Stage 2: 
-        reconstructed_beacon_tensor = torch.tensor(reconstructed_beacon, dtype=torch.float32, requires_grad=True)
-        optimizer = torch.optim.Adam([reconstructed_beacon_tensor], lr=0.001)
+        if corr_active:
+            corr_history.append(l_corr)
+        if freq_active:
+            freq_history.append(l_freq)
 
-        for epoch in range(freq_epoch):
-            optimizer.zero_grad()
-            freq_loss = beacon_tool.frequency_loss(reconstructed_beacon_tensor, target_frequencies)
-            freq_loss.backward()
-            optimizer.step()
+        if i > min_iterations:
+            if corr_active and len(corr_history) == window_size:
+                corr_progress = corr_history[0] - corr_history[-1]
+                if abs(corr_progress) < tolerance_corr:
+                    corr_active = False
+                    current_corr_steps = 0
 
-            if epoch % 100 == 0:
-                print(f'Iteration {iteration}, Epoch {epoch}, Frequency loss: {freq_loss.item()}')
+            if freq_active and len(freq_history) == window_size:
+                freq_progress = freq_history[0] - freq_history[-1]
+                if abs(freq_progress) < tolerance_freq:
+                    freq_active = False
+                    current_freq_steps = 0
 
-        reconstructed_beacon = (reconstructed_beacon_tensor.detach().numpy() > 0.5).astype(int)
-        print(reconstructed_beacon, "Frequency-Optimized Reconstructed Beacon")
-
-        # Convergence 
-        if prev_reconstructed_beacon is not None:
-            # Count the number of flips between current and previous beacons
-            flips = np.sum(reconstructed_beacon != prev_reconstructed_beacon)
-            print(f"Flips: {flips}")
-
-            # Check if flips are less than 10
-            if flips < 10:
-                converged = True
-                print("Converged based on flip.")
+            if not corr_active and not freq_active:
                 break
 
-    # Update 
-    prev_reconstructed_beacon = reconstructed_beacon.copy()
+    end_time = time.time()
 
+    reconstructed_beacon = optimizer_tool.get_reconstruction()
+    reconstructed_sorted = optimizer_tool.compare_and_sort_columns(beacon, reconstructed_beacon)
+    acc = optimizer_tool.calculate_accuracy(beacon, reconstructed_sorted)
+    f1 = optimizer_tool.calculate_f1(beacon, reconstructed_sorted)
+    
+    all_accuracies.append(acc)
+    all_f1_scores.append(f1)
+    all_time.append(end_time - start_time)
+    
+    print(f"Run {run + 1}/{args.num_runs} | Time: {end_time - start_time:.2f}s | Acc: {acc:.4f} | F1: {f1:.4f}")
 
-    new_beacon = beacon_tool.compare_and_sort_columns(beacon, reconstructed_beacon)
-    print(new_beacon, "Sorted Reconstructed Beacon")
-
-    # Compute metrics
-    accuracy = beacon_tool.calculate_accuracy(beacon, new_beacon)
-    precision = beacon_tool.calculate_precision(beacon, new_beacon)
-    recall = beacon_tool.calculate_recall(beacon, new_beacon)
-    f1 = beacon_tool.calculate_f1(beacon, new_beacon)
-
-    accuracies.append(accuracy)
-    precisions.append(precision)
-    recalls.append(recall)
-    f1_scores.append(f1)
-
-# Print
-print("Individuals\tAccuracy\tPrecision\tRecall\t\tF1 Score")
-for i in range(len(beacon_size)):
-    print(f"{beacon_size[i]}\t\t{accuracies[i]:.3f}\t\t{precisions[i]:.3f}\t\t{recalls[i]:.3f}\t\t{f1_scores[i]:.3f}")
+print("=" * 50)
+print(f"FINAL RESULTS (Averaged over {args.num_runs} runs)")
+print(f"Average Accuracy: {np.mean(all_accuracies):.4f} ± {np.std(all_accuracies):.4f}")
+print(f"Average F1 Score: {np.mean(all_f1_scores):.4f} ± {np.std(all_f1_scores):.4f}")
+print(f"Average Time: {np.mean(all_time):.4f} ± {np.std(all_time):.4f}")
+print("=" * 50)

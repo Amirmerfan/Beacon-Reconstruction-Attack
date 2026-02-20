@@ -10,10 +10,8 @@ try:
 except ImportError:
     torch_version = "Torch not installed or import failed"
 
-# argparse does not have a __version__ attribute
 argparse_version = "Builtin (part of Python standard library)"
 
-# Print the versions
 print("Python Version:", f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
 print("numpy Version:", np.__version__)
 print("scipy Version:", scipy.__version__)

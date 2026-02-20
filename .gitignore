@@ -29,6 +29,11 @@ htmlcov/
 .cache
 pytest_cache/
 
+Beacon_164.txt
+
+convert_hapmap.py
+split_data.py
+
 # IDEs / editors
 .vscode/
 .idea/

@@ -1,155 +1,137 @@
-import numpy as np
-import math
 import torch
+import torch.nn as nn
+import numpy as np
 from scipy.spatial.distance import hamming
-import matplotlib.pyplot as plt
 
-class ReconstructionTool:
-    def __init__(self, beacon):
-        self.beacon = beacon
-
-    def query(self, proportion=1.0):
-        """
-        Generates a reconstructed beacon based on the proportion of 1's to retain.
+class ReconstructionTool(nn.Module):
+    def __init__(self, beacon_shape, correlation_matrix, initial_guess=None, device=None):
+        super().__init__()
+        self.device = device if device else ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.num_snps, self.num_indiv = beacon_shape
         
-        Args:
-            proportion (float): Proportion of 1's to query in each row. Default is 1.0.
+        self.C_target = torch.tensor(correlation_matrix, dtype=torch.float32, device=self.device)
+        
+        if initial_guess is not None:
+            guess_tensor = torch.tensor(initial_guess, dtype=torch.float32, device=self.device)
+            init_logits = (guess_tensor * 4) - 2 
+        else:
+            init_logits = torch.randn(self.num_snps, self.num_indiv, device=self.device)
 
-        Returns:
-            np.ndarray: Reconstructed beacon matrix.
-        """
-        # Initialize 
-        reconstructed_beacon = np.zeros_like(self.beacon)
+        self.B_logits = nn.Parameter(init_logits.requires_grad_(True))
 
-        # Iterate 
-        for idx, row in enumerate(self.beacon):
-            # Calculate the number of 1's to assign based on the given proportion
-            num_ones = int(np.sum(row) * proportion)
+        self.opt_corr = torch.optim.Adam([self.B_logits], lr=0.005, fused=True) 
+        self.opt_freq = torch.optim.Adam([self.B_logits], lr=0.005, fused=True)
 
-            # Generate random 
-            indices_to_fill = np.random.choice(self.beacon.shape[1], size=num_ones, replace=False)
+    def calculate_current_correlations(self, B_soft):
+        p11 = torch.matmul(B_soft, B_soft.T)
+        return p11 / self.num_indiv
 
-            # Assign 1's 
-            reconstructed_beacon[idx, indices_to_fill] = 1
+    def _train_corr_step(self):
+        self.opt_corr.zero_grad(set_to_none=True)
+        self.B_logits.data.clamp_(-5.0, 5.0) 
+        B_soft = torch.sigmoid(self.B_logits)
+        current_corr = self.calculate_current_correlations(B_soft)
+        loss = torch.norm(current_corr - self.C_target, p='fro')
+        loss.backward()
+        self.opt_corr.step()
+        return loss
 
-        return reconstructed_beacon  # Return the reconstructed beacon
+    def _train_freq_step(self, target_freqs):
+        self.opt_freq.zero_grad(set_to_none=True)
+        self.B_logits.data.clamp_(-5.0, 5.0)
+        B_soft = torch.sigmoid(self.B_logits)
+        freq_estimated = torch.sum(B_soft, dim=1)
+        loss = nn.functional.mse_loss(freq_estimated, target_freqs)
+        loss.backward()
+        self.opt_freq.step()
+        return loss
 
-    @staticmethod
-    def visualize_beacon(beacon):
-        """
-        Visualizes the beacon matrix as a heatmap.
-        """
-        plt.imshow(beacon, cmap='gray')
-        plt.xlabel('Individuals')
-        plt.ylabel('SNPs')
-        plt.title('Beacon')
-        plt.show()
+    def optimize_vg(self, target_frequencies, cycles=1, corr_steps=1000, freq_steps=500):
+        if not torch.is_tensor(target_frequencies):
+            target_freqs = torch.tensor(target_frequencies, dtype=torch.float32, device=self.device)
+        else:
+            target_freqs = target_frequencies.to(self.device)
 
-    @staticmethod
-    def calculate_correlations(beacon):
-        '''
-        Calculates the correlations between each pair of SNPs based on the Sokal-Michener similarity.
+        final_corr_loss = 0.0
+        final_freq_loss = 0.0
 
-        Parameters:
-            beacon: A numpy matrix with 0's and 1's representing SNP data.
+        for _ in range(cycles):
+            for _ in range(corr_steps):
+                loss_tensor_corr = self._train_corr_step()
+            
+            final_corr_loss = loss_tensor_corr.item()
+            
+            for _ in range(freq_steps):
+                loss_tensor_freq = self._train_freq_step(target_freqs)
 
-        Returns:   
-            A numpy matrix with the correlations.
-        '''
-        #population
-        N_p = beacon.shape[1]
+            final_freq_loss = loss_tensor_freq.item()
 
-        #  pairs of SNPs
-        correlations = beacon @ beacon.T / N_p
+        return final_corr_loss, final_freq_loss
+    
+    def optimize(self, target_frequencies, cycles=1, corr_steps=1000, freq_steps=500):
+        if not torch.is_tensor(target_frequencies):
+            target_freqs = torch.tensor(target_frequencies, dtype=torch.float32, device=self.device)
+        else:
+            target_freqs = target_frequencies.to(self.device)
 
-        return correlations
+        final_corr_loss = 0.0
+        final_freq_loss = 0.0
 
+        for _ in range(cycles):
+            if corr_steps > 0:
+                for _ in range(corr_steps):
+                    loss_tensor_corr = self._train_corr_step()
+                final_corr_loss = loss_tensor_corr.item()
+            
+            if freq_steps > 0:
+                for _ in range(freq_steps):
+                    loss_tensor_freq = self._train_freq_step(target_freqs)
+                final_freq_loss = loss_tensor_freq.item()
+
+        return final_corr_loss, final_freq_loss
+    
+    def get_reconstruction(self):
+        with torch.no_grad():
+            return (torch.sigmoid(self.B_logits) > 0.5).int().cpu().numpy()
 
     @staticmethod
     def calculate_accuracy(beacon, new_beacon):
-        """
-        Calculates accuracy between the original and reconstructed beacons.
-        """
-        true_positives = np.sum((beacon == 1) & (new_beacon == 1))
-        true_negatives = np.sum((beacon == 0) & (new_beacon == 0))
-        false_positives = np.sum((beacon == 0) & (new_beacon == 1))
-        false_negatives = np.sum((beacon == 1) & (new_beacon == 0))
-        return (true_positives + true_negatives) / (true_positives + false_positives + false_negatives + true_negatives)
-
-    @staticmethod
-    def calculate_precision(beacon, new_beacon):
-        """
-        Calculates precision between the original and reconstructed beacons.
-        """
-        true_positives = np.sum((beacon == 1) & (new_beacon == 1))
-        false_positives = np.sum((beacon == 0) & (new_beacon == 1))
-        return true_positives / (true_positives + false_positives)
-
-    @staticmethod
-    def calculate_recall(beacon, new_beacon):
-        """
-        Calculates recall between the original and reconstructed beacons.
-        """
-        true_positives = np.sum((beacon == 1) & (new_beacon == 1))
-        false_negatives = np.sum((beacon == 1) & (new_beacon == 0))
-        return true_positives / (true_positives + false_negatives)
-
+        return np.mean(beacon == new_beacon)
+        
     @staticmethod
     def calculate_f1(beacon, new_beacon):
-        """
-        Calculates F1 score between the original and reconstructed beacons.
-        """
-        precision = ReconstructionTool.calculate_precision(beacon, new_beacon)
-        recall = ReconstructionTool.calculate_recall(beacon, new_beacon)
-        return 2 * ((precision * recall) / (precision + recall))
-
+        tp = np.sum((beacon == 1) & (new_beacon == 1))
+        fp = np.sum((beacon == 0) & (new_beacon == 1))
+        fn = np.sum((beacon == 1) & (new_beacon == 0))
+        if tp == 0: return 0
+        precision = tp / (tp + fp)
+        recall = tp / (tp + fn)
+        return 2 * (precision * recall) / (precision + recall)
+    
     @staticmethod
-    def frequency_loss(reconstructed_beacon, target_frequencies):
-        """
-        Calculates frequency loss for the reconstructed beacon.
-
-        Args:
-            reconstructed_beacon (torch.Tensor): Reconstructed beacon matrix.
-            target_frequencies (torch.Tensor): Target frequencies for each row.
-
-        Returns:
-            torch.Tensor: Frequency loss value.
-        """
-        current_frequencies = torch.sum(reconstructed_beacon, dim=1)
-        loss = torch.mean((current_frequencies - target_frequencies) ** 2)
-        return loss
-
+    def compare_and_sort_columns(beacon, reconstructed_beacon):     
+        num_columns = beacon.shape[1]
+        sorted_beacon = np.zeros_like(beacon)
+        used_indices = set()
+        for i in range(num_columns):
+            best_j = -1
+            min_dist = float('inf')
+            for j in range(num_columns):
+                if j in used_indices: continue
+                dist = hamming(beacon[:, i], reconstructed_beacon[:, j])
+                if dist < min_dist:
+                    min_dist = dist
+                    best_j = j
+            sorted_beacon[:, i] = reconstructed_beacon[:, best_j]
+            used_indices.add(best_j)
+        return sorted_beacon
+    
     @staticmethod
-    def compare_and_sort_columns(beacon, reconstructed_beacon):
-        """
-        Aligns columns of the reconstructed beacon to match the original beacon.
-
-        Args:
-            beacon (np.ndarray): Original beacon matrix.
-            reconstructed_beacon (np.ndarray): Reconstructed beacon matrix.
-
-        Returns:
-            np.ndarray: Column-aligned reconstructed beacon.
-        """
-        num_columns_beacon = beacon.shape[1]
-        reconstructed_beacon1 = np.zeros_like(beacon)
-
-        for i in range(num_columns_beacon):
-            hamming_distances = [
-                (hamming(beacon[:, i].flatten(), reconstructed_beacon[:, j].flatten()), j)
-                for j in range(reconstructed_beacon.shape[1])
-            ]
-            _, most_similar_column = min(hamming_distances)
-            reconstructed_beacon1[:, i] = reconstructed_beacon[:, most_similar_column]
-
-        return reconstructed_beacon1
-
-    @staticmethod
-    def print_metrics_table(individuals, accuracies, precisions, recalls, f1_scores):
-        """
-        Prints the evaluation metrics in a tabular format.
-        """
-        print("\nResults Summary:")
-        print("Individuals\tAccuracy\tPrecision\tRecall\t\tF1 Score")
-        for i in range(len(individuals)):
-            print(f"{individuals[i]}\t\t{accuracies[i]:.3f}\t\t{precisions[i]:.3f}\t\t{recalls[i]:.3f}\t\t{f1_scores[i]:.3f}")
+    def greedy_initialization(beacon_freqs, N):
+        M = len(beacon_freqs)
+        guess = np.zeros((M, N))
+        for i in range(M):
+            count = int(beacon_freqs[i]) if beacon_freqs[i] > 1 else int(round(beacon_freqs[i] * N))
+            indices = np.random.choice(N, count, replace=False)
+            guess[i, indices] = 1.0
+        return guess
