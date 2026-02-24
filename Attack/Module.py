@@ -21,7 +21,7 @@ class ReconstructionTool(nn.Module):
         self.B_logits = nn.Parameter(init_logits.requires_grad_(True))
 
         self.opt_corr = torch.optim.Adam([self.B_logits], lr=0.001, fused=True) 
-        self.opt_freq = torch.optim.Adam([self.B_logits], lr=0.010, fused=True)
+        self.opt_freq = torch.optim.Adam([self.B_logits], lr=0.01, fused=True)
 
     def calculate_current_correlations(self, B_soft):
         p11 = torch.matmul(B_soft, B_soft.T)
@@ -29,24 +29,12 @@ class ReconstructionTool(nn.Module):
         total_matches = (2 * p11) + self.num_indiv - row_sums - row_sums.T
         return total_matches / self.num_indiv
 
-    def _train_corr_step_vg(self):
-        self.opt_corr.zero_grad(set_to_none=True)
-        self.B_logits.data.clamp_(-5.0, 5.0) 
-        B_soft = torch.sigmoid(self.B_logits)
-        current_corr = self.calculate_current_correlations(B_soft)
-        loss = torch.norm(current_corr - self.C_target, p='fro')
-        loss.backward()
-        self.opt_corr.step()
-        return loss
-        
     def _train_corr_step(self):
         self.opt_corr.zero_grad(set_to_none=True)
         self.B_logits.data.clamp_(-5.0, 5.0) 
         B_soft = torch.sigmoid(self.B_logits)
         current_corr = self.calculate_current_correlations(B_soft)
-        
-        loss = nn.functional.mse_loss(current_corr, self.C_target)
-        
+        loss = torch.norm(current_corr - self.C_target, p='fro')
         loss.backward()
         self.opt_corr.step()
         return loss

@@ -50,4 +50,4 @@ def generate_aligned_datasets(data_dir, num_snps=1000, beacon_size=50, corr_size
 
 if __name__ == "__main__":
     DATA_DIRECTORY = "./" 
-    generate_aligned_datasets(DATA_DIRECTORY, num_snps=1000, beacon_size=50, corr_size=100, seed=42)
+    generate_aligned_datasets(DATA_DIRECTORY, num_snps=1000, beacon_size=50, corr_size=50, seed=42)
