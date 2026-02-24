@@ -30,10 +30,10 @@ htmlcov/
 pytest_cache/
 
 Beacon_164.txt
-
+MAF.txt
 convert_hapmap.py
 split_data.py
-
+reference.pickle
 # IDEs / editors
 .vscode/
 .idea/

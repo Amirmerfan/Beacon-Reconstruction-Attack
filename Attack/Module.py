@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from scipy.spatial.distance import hamming
+from scipy.optimize import linear_sum_assignment
 
 class ReconstructionTool(nn.Module):
     def __init__(self, beacon_shape, correlation_matrix, initial_guess=None, device=None):
@@ -19,14 +20,16 @@ class ReconstructionTool(nn.Module):
 
         self.B_logits = nn.Parameter(init_logits.requires_grad_(True))
 
-        self.opt_corr = torch.optim.Adam([self.B_logits], lr=0.005, fused=True) 
-        self.opt_freq = torch.optim.Adam([self.B_logits], lr=0.005, fused=True)
+        self.opt_corr = torch.optim.Adam([self.B_logits], lr=0.001, fused=True) 
+        self.opt_freq = torch.optim.Adam([self.B_logits], lr=0.010, fused=True)
 
     def calculate_current_correlations(self, B_soft):
         p11 = torch.matmul(B_soft, B_soft.T)
-        return p11 / self.num_indiv
+        row_sums = torch.sum(B_soft, dim=1, keepdim=True)
+        total_matches = (2 * p11) + self.num_indiv - row_sums - row_sums.T
+        return total_matches / self.num_indiv
 
-    def _train_corr_step(self):
+    def _train_corr_step_vg(self):
         self.opt_corr.zero_grad(set_to_none=True)
         self.B_logits.data.clamp_(-5.0, 5.0) 
         B_soft = torch.sigmoid(self.B_logits)
@@ -35,12 +38,24 @@ class ReconstructionTool(nn.Module):
         loss.backward()
         self.opt_corr.step()
         return loss
+        
+    def _train_corr_step(self):
+        self.opt_corr.zero_grad(set_to_none=True)
+        self.B_logits.data.clamp_(-5.0, 5.0) 
+        B_soft = torch.sigmoid(self.B_logits)
+        current_corr = self.calculate_current_correlations(B_soft)
+        
+        loss = nn.functional.mse_loss(current_corr, self.C_target)
+        
+        loss.backward()
+        self.opt_corr.step()
+        return loss
 
     def _train_freq_step(self, target_freqs):
         self.opt_freq.zero_grad(set_to_none=True)
         self.B_logits.data.clamp_(-5.0, 5.0)
         B_soft = torch.sigmoid(self.B_logits)
-        freq_estimated = torch.sum(B_soft, dim=1)
+        freq_estimated = torch.mean(B_soft, dim=1)
         loss = nn.functional.mse_loss(freq_estimated, target_freqs)
         loss.backward()
         self.opt_freq.step()
@@ -109,21 +124,20 @@ class ReconstructionTool(nn.Module):
         return 2 * (precision * recall) / (precision + recall)
     
     @staticmethod
-    def compare_and_sort_columns(beacon, reconstructed_beacon):     
+    def compare_and_sort_columns(beacon, reconstructed_beacon):    
         num_columns = beacon.shape[1]
-        sorted_beacon = np.zeros_like(beacon)
-        used_indices = set()
+        cost_matrix = np.zeros((num_columns, num_columns))
+        
         for i in range(num_columns):
-            best_j = -1
-            min_dist = float('inf')
             for j in range(num_columns):
-                if j in used_indices: continue
-                dist = hamming(beacon[:, i], reconstructed_beacon[:, j])
-                if dist < min_dist:
-                    min_dist = dist
-                    best_j = j
-            sorted_beacon[:, i] = reconstructed_beacon[:, best_j]
-            used_indices.add(best_j)
+                cost_matrix[i, j] = hamming(beacon[:, i], reconstructed_beacon[:, j])
+                
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        
+        sorted_beacon = np.zeros_like(beacon)
+        for i in range(num_columns):
+            sorted_beacon[:, i] = reconstructed_beacon[:, col_ind[i]]
+            
         return sorted_beacon
     
     @staticmethod
