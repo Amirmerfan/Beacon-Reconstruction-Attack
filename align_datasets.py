@@ -6,8 +6,10 @@ import os
 def generate_aligned_datasets(data_dir, num_snps=1000, beacon_size=50, corr_size=100, seed=42):
     print(f"1. Loading top {num_snps} SNPs from Beacon_164.txt...")
     
-    beacon_path = os.path.join(data_dir, "Beacon_164.txt")
-    beacon_df = pd.read_csv(beacon_path, index_col=0, sep='\s+', nrows=num_snps)
+    beacon_path = os.path.join(data_dir, "beacon_1000snps.npy")
+    beacon_matrix = np.load(beacon_path)
+
+    beacon_matrix = beacon_matrix[:num_snps, :]
     
     ref_path = os.path.join(data_dir, "reference.pickle")
     with open(ref_path, "rb") as fp:
@@ -18,7 +20,7 @@ def generate_aligned_datasets(data_dir, num_snps=1000, beacon_size=50, corr_size
         
     reference = np.array(reference)[:num_snps].reshape(-1, 1)
     
-    binary_matrix = np.logical_and(beacon_df.values != reference, beacon_df.values != "NN").astype(np.float32)
+    binary_matrix = np.logical_and(beacon_matrix != reference, beacon_matrix != "NN").astype(np.float32)
     
     total_individuals = binary_matrix.shape[1]
     
@@ -50,4 +52,4 @@ def generate_aligned_datasets(data_dir, num_snps=1000, beacon_size=50, corr_size
 
 if __name__ == "__main__":
     DATA_DIRECTORY = "./" 
-    generate_aligned_datasets(DATA_DIRECTORY, num_snps=1000, beacon_size=50, corr_size=50, seed=42)
+    generate_aligned_datasets(DATA_DIRECTORY, num_snps=1000, beacon_size=50, corr_size=100, seed=42)

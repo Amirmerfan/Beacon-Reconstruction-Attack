@@ -70,9 +70,10 @@ for run in range(args.num_runs):
         flips = np.sum(previous_binary != current_binary)
         previous_binary = current_binary
 
-        print(f"Run {run + 1} | Iteration {i} | Corr Loss: {l_corr:.6f} | Freq Loss: {l_freq:.6f} | Flips: {flips}")
+        if i % 10 == 0:
+            print(f"Run {run + 1} | Iteration {i} | Corr Loss: {l_corr:.6f} | Freq Loss: {l_freq:.6f} | Flips: {flips}")
 
-        if i > grace_period and flips < 10:
+        if i > grace_period and flips < 3:
             print(f"--> Optimization converged perfectly at iteration {i}. Only {flips} bits flipped.")
             break
 

@@ -41,6 +41,9 @@ reference.pickle
 *.swo
 *.npy
 
+1000snps/
+4000snps/
+
 # Jupyter
 .ipynb_checkpoints/
 
